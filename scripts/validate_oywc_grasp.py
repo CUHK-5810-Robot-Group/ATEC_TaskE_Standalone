@@ -78,6 +78,14 @@ def main() -> int:
     sm.advance(reached=True, released=True)
     sm.advance(reached=True)
     assert sm.phase == GraspPhase.DONE
+
+    retry = GraspStateMachine(max_retries=1)
+    retry.advance(reached=True)
+    retry.advance(reached=True)
+    retry.advance(reached=False, object_followed=False)
+    assert retry.phase == GraspPhase.RETRY
+    retry.advance(reached=True)
+    assert retry.phase == GraspPhase.APPROACH
     print("OYWC RGB-D checks passed: body-middle horizontal bottle grasp, outlier rejection, stale-jump gate, finite phases")
     return 0
 
