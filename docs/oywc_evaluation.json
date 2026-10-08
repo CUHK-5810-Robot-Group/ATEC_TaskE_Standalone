@@ -1,0 +1,28 @@
+{
+  "branch": "OYWC",
+  "comparison": {
+    "strategy_a": "ACT RGB + absolute 8-joint action",
+    "strategy_b": "RGB-D mask geometry + narrow-edge grasp + finite state machine",
+    "same_seeds_required": true,
+    "same_termination_required": true
+  },
+  "offline_validation": {
+    "command": "python scripts/validate_oywc_grasp.py",
+    "checks": [
+      "upright bottle body-middle center",
+      "horizontal closing axis for upright bottle",
+      "depth outlier rejection",
+      "jump/stale pose gate",
+      "bounded retry state transitions"
+    ]
+  },
+  "video_inputs": [
+    {"file": "9f96ca7a57fa18a9935182a0b3631691_raw.mp4", "duration_s": 25.92, "frames": 1296, "fps": 50},
+    {"file": "6aefae75987b56432415c74d954c0130_raw.mp4", "duration_s": 32.44, "frames": 1622, "fps": 50}
+  ],
+  "isaac_sim_closed_loop": {
+    "status": "pending_external_runner",
+    "reason": "The local handoff folder does not contain a runnable Isaac Lab checkout or scoring endpoint.",
+    "do_not_claim_full_score": true
+  }
+}
