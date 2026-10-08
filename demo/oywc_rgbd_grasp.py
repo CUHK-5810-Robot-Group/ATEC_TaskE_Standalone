@@ -179,10 +179,14 @@ class CenterlineNarrowEdgeGraspPlanner:
         if approach_base[2] > 0:
             approach_base = -approach_base
         yaw = float(np.arctan2(closing_base[1], closing_base[0]))
-        # Estimated width is a conservative opening target.  It is never used
-        # as a substitute for the planner's collision and force limits.
-        side = body_uv @ minor
-        width_m = float(np.percentile(side, 90) - np.percentile(side, 10))
+        # Estimate the opening in metres from the reconstructed 3-D points.
+        # Using the image span directly would make the same bottle appear
+        # wider when it is farther from the camera and would saturate the
+        # opening clamp.  This is only a conservative target; it never
+        # replaces collision and force limits in the robot adapter.
+        closing_camera /= max(np.linalg.norm(closing_camera), 1e-12)
+        side_metric = body_camera @ closing_camera
+        width_m = float(np.percentile(side_metric, 90) - np.percentile(side_metric, 10))
         width_m = float(np.clip(width_m * 1.25, 0.018, 0.080))
         confidence = float(np.clip(observation.confidence * min(1.0, len(body_uv) / 150.0), 0.0, 1.0))
         if observation.label == "mustard_bottle":
@@ -277,6 +281,10 @@ class GraspStateMachine:
             self.phase = GraspPhase.RETREAT
         elif self.phase == GraspPhase.RETREAT and reached:
             self.phase = GraspPhase.DONE
+        elif self.phase == GraspPhase.RETRY and reached:
+            # Refresh RGB-D and re-enter the guarded approach sequence.  A
+            # retry must never resume at CLOSE or LIFT with a stale target.
+            self.phase = GraspPhase.APPROACH
         return self.phase
 
     def _retry(self) -> GraspPhase:
