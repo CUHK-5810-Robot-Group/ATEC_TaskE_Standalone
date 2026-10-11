@@ -2,8 +2,11 @@
 
 Usage
 -----
-# NOTE: only for object 3 now, if you want to pick objects 1 and 2, please modify the distance accordingly.
-python scripts/act/collect_demos_task_e.py --pick_objects 3 --num_demos 50 --headless
+# Single-object debug (save MP4, require in-basket success):
+python scripts/act/collect_demos_task_e.py --pick_objects 1 --num_demos 5 \
+  --save_video --only_success --headless --enable_cameras
+
+# Tune GRASP_Z_OFFSET_BY_OBJECT in scripts/act/task_e/config.py if CLOSE/LIFT fails.
 
 """
 
@@ -44,7 +47,13 @@ from task_e.config import (
     ACT_STIFFNESS, ACT_DAMPING, ACT_EFFORT_LIMIT, ACT_VEL_LIMIT,
     CAM_H, CAM_W, CAM_POS, CAM_ROT,
 )
-from task_e.collector import check_objects_in_basket, collect_one_demo
+from task_e.collector import (
+    check_objects_in_basket,
+    collect_one_demo,
+    describe_basket_check,
+    settle_physics_after_demo,
+)
+from task_e.config import POST_DEMO_SETTLE_STEPS
 
 
 def build_env(pick_objects: list[int], need_camera: bool) -> ManagerBasedRLEnv:
@@ -52,7 +61,7 @@ def build_env(pick_objects: list[int], need_camera: bool) -> ManagerBasedRLEnv:
     cfg = TaskEEnvPiperCfg()
     cfg.seed              = int(time.time_ns() % (2**31))   # random seed each call
     cfg.scene.num_envs    = 1
-    cfg.episode_length_s  = 40.0 * len(pick_objects) + 10.0
+    cfg.episode_length_s  = 55.0 * len(pick_objects) + 15.0
     cfg.scene.robot.actuators["default"] = ImplicitActuatorCfg(
         joint_names_expr=[".*"],
         effort_limit=ACT_EFFORT_LIMIT,
@@ -139,6 +148,12 @@ def main() -> None:
     attempt = 0
     while n_ok < args_cli.num_demos:
         attempt += 1
+        if attempt > args_cli.max_attempts:
+            print(
+                f"\n[ERROR] Reached --max_attempts ({args_cli.max_attempts}) "
+                f"with only {n_ok}/{args_cli.num_demos} demos saved."
+            )
+            break
         print(f"\n[INFO] Demo {n_ok + 1}/{args_cli.num_demos}  (attempt {attempt})")
 
         data = collect_one_demo(
@@ -153,9 +168,12 @@ def main() -> None:
             print("[WARN] Early termination — skipping.")
             continue
 
-        if args_cli.only_success and not check_objects_in_basket(env, pick_objects):
-            print("[WARN] Objects not in basket — skipping (--only_success).")
-            continue
+        if args_cli.only_success:
+            settle_physics_after_demo(env, default_jpos, POST_DEMO_SETTLE_STEPS)
+            if not check_objects_in_basket(env, pick_objects):
+                print("[WARN] Objects not in basket — skipping (--only_success).")
+                print(describe_basket_check(env, pick_objects))
+                continue
 
         save_traj(traj_path, n_ok, data, args_cli.save_images)
 

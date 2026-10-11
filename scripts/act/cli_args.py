@@ -34,3 +34,7 @@ def add_collect_demo_args(parser) -> None:
         "--only_success", action="store_true", default=False,
         help="Discard demos where not all picked objects ended up in the basket.",
     )
+    parser.add_argument(
+        "--max_attempts", type=int, default=500,
+        help="Stop after this many collection attempts even if num_demos not reached.",
+    )

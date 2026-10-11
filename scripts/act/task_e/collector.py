@@ -5,8 +5,9 @@ import torch
 from isaaclab.envs import ManagerBasedRLEnv
 from atec_rl_lab.utils import CartesianController
 from atec_rl_lab.tasks.task_e.env_cfg import (
-    TABLE_CENTER_X, TABLE_CENTER_Y, TABLE_TOP_Z,
-    BASKET_CENTER_X, BASKET_CENTER_Y,
+    BASKET_SUCCESS_CENTER,
+    BASKET_SUCCESS_HALF_X,
+    BASKET_SUCCESS_HALF_Y,
 )
 
 from .config import (
@@ -14,12 +15,107 @@ from .config import (
     GRIPPER_OPEN_POS, GRIPPER_CLOSE_POS,
     RETRACT_POS_X, RETRACT_POS_Y, CARRY_Z,
     DEFAULT_PLACE_QUAT_W,
-    BASKET_IN_X, BASKET_IN_Y,
+    BASKET_SUCCESS_MIN_Z, BASKET_SUCCESS_MAX_Z,
     OBJ_SPAWN_X_MIN, OBJ_SPAWN_X_MAX, OBJ_SPAWN_Z, OBJ_SPAWN_Y_BANDS,
     OBJ_HALF_EXTENTS, OBJ_BBOX_MARGIN,
+    SIDE_GRASP_OBJECT_IDS,
     WARMUP_STEPS, SETTLE_STEPS,
 )
 from .state_machine import PickPlaceStateMachine
+
+
+def _object_in_basket_region(
+    env: ManagerBasedRLEnv,
+    object_name: str,
+    *,
+    center_xy: tuple[float, float],
+    half_x: float,
+    half_y: float,
+    min_z: float,
+    max_z: float,
+) -> bool:
+    """Match ObjectsInBasketDone geometry for one rigid object."""
+    obj = env.unwrapped.scene.rigid_objects[object_name]
+    pos = obj.data.root_pos_w[0] - env.unwrapped.scene.env_origins[0]
+    px, py, pz = pos[0].item(), pos[1].item(), pos[2].item()
+    cx, cy = center_xy
+    if abs(px - cx) > half_x or abs(py - cy) > half_y:
+        return False
+    return min_z <= pz <= max_z
+
+
+def check_all_objects_in_basket(env: ManagerBasedRLEnv) -> bool:
+    """True when all three task objects satisfy the evaluation success region."""
+    center_xy = (BASKET_SUCCESS_CENTER[0], BASKET_SUCCESS_CENTER[1])
+    for obj_idx in (1, 2, 3):
+        if not _object_in_basket_region(
+            env,
+            f"object_{obj_idx}",
+            center_xy=center_xy,
+            half_x=BASKET_SUCCESS_HALF_X,
+            half_y=BASKET_SUCCESS_HALF_Y,
+            min_z=BASKET_SUCCESS_MIN_Z,
+            max_z=BASKET_SUCCESS_MAX_Z,
+        ):
+            return False
+    return True
+
+
+def check_objects_in_basket(env: ManagerBasedRLEnv, pick_objects: list[int]) -> bool:
+    """True when every object in *pick_objects* is inside the basket success region."""
+    center_xy = (BASKET_SUCCESS_CENTER[0], BASKET_SUCCESS_CENTER[1])
+    for obj_idx in pick_objects:
+        if not _object_in_basket_region(
+            env,
+            f"object_{obj_idx}",
+            center_xy=center_xy,
+            half_x=BASKET_SUCCESS_HALF_X,
+            half_y=BASKET_SUCCESS_HALF_Y,
+            min_z=BASKET_SUCCESS_MIN_Z,
+            max_z=BASKET_SUCCESS_MAX_Z,
+        ):
+            return False
+    return True
+
+
+def describe_basket_check(
+    env: ManagerBasedRLEnv, pick_objects: list[int]
+) -> str:
+    """Human-readable per-object position vs evaluation success bounds."""
+    cx, cy = BASKET_SUCCESS_CENTER[0], BASKET_SUCCESS_CENTER[1]
+    lines = [
+        f"  success XY center=({cx:.3f}, {cy:.3f}), "
+        f"half=({BASKET_SUCCESS_HALF_X}, {BASKET_SUCCESS_HALF_Y}), "
+        f"Z in [{BASKET_SUCCESS_MIN_Z:.4f}, {BASKET_SUCCESS_MAX_Z:.4f}]",
+    ]
+    for obj_idx in pick_objects:
+        name = f"object_{obj_idx}"
+        obj = env.unwrapped.scene.rigid_objects[name]
+        pos = obj.data.root_pos_w[0] - env.unwrapped.scene.env_origins[0]
+        px, py, pz = pos[0].item(), pos[1].item(), pos[2].item()
+        ok_x = abs(px - cx) <= BASKET_SUCCESS_HALF_X
+        ok_y = abs(py - cy) <= BASKET_SUCCESS_HALF_Y
+        ok_z = BASKET_SUCCESS_MIN_Z <= pz <= BASKET_SUCCESS_MAX_Z
+        ok = ok_x and ok_y and ok_z
+        lines.append(
+            f"  {name}: pos=({px:.3f}, {py:.3f}, {pz:.3f}) -> "
+            f"{'OK' if ok else 'FAIL'} "
+            f"(x{' OK' if ok_x else ' OUT'}, y{' OK' if ok_y else ' OUT'}, z{' OK' if ok_z else ' OUT'})"
+        )
+    return "\n".join(lines)
+
+
+def settle_physics_after_demo(
+    env: ManagerBasedRLEnv,
+    default_jpos: torch.Tensor,
+    steps: int,
+) -> None:
+    """Run extra env steps so released objects can fall/settle before success checks."""
+    if steps <= 0:
+        return
+    zero = torch.zeros_like(default_jpos)
+    for _ in range(steps):
+        env.step(zero)
 
 
 def _rerandomize_objects(env: ManagerBasedRLEnv, rng: np.random.Generator) -> None:
@@ -61,17 +157,16 @@ def _rerandomize_objects(env: ManagerBasedRLEnv, rng: np.random.Generator) -> No
     env.unwrapped.sim.forward()
 
 
-_BASKET_MAX_Z = TABLE_TOP_Z + 0.1   # object must be below this to count as inside
-
-def check_objects_in_basket(env: ManagerBasedRLEnv, pick_objects: list[int]) -> bool:
-    """Return True only if every picked object is inside the basket region and settled."""
-    for obj_idx in pick_objects:
-        pos = env.unwrapped.scene.rigid_objects[f"object_{obj_idx}"].data.root_pos_w[0]
-        if (abs(pos[0].item() - BASKET_CENTER_X) > BASKET_IN_X or
-                abs(pos[1].item() - BASKET_CENTER_Y) > BASKET_IN_Y or
-                pos[2].item() > _BASKET_MAX_Z):
-            return False
-    return True
+def _restore_side_grasp_yaw(env: ManagerBasedRLEnv) -> None:
+    """Put side-grasp objects back on their canonical upright yaw after warm-up/settle."""
+    for obj_idx in SIDE_GRASP_OBJECT_IDS:
+        obj = env.unwrapped.scene.rigid_objects[f"object_{obj_idx}"]
+        state = obj.data.root_state_w[0:1].clone()
+        state[0, 3:7] = obj.data.default_root_state[0, 3:7]
+        state[0, 7:] = 0.0
+        obj.write_root_state_to_sim(state)
+    env.unwrapped.scene.write_data_to_sim()
+    env.unwrapped.sim.forward()
 
 
 def collect_one_demo(
@@ -86,7 +181,7 @@ def collect_one_demo(
     rng:         np.random.Generator,
     camera=None,
 ) -> dict | None:
-    """Run one full episode and return recorded data, or None on early termination.
+    """Run one full episode and return recorded data, or None on failed early stop.
 
     Returns a dict with keys:
       qpos    (T, 8)        absolute joint positions
@@ -118,17 +213,18 @@ def collect_one_demo(
         _step_to(env, robot, ik_ctrl, arm_ids, gripper_ids,
                  ee_home, eq_home, g_open, default_jpos)
 
-    # Pre-compute grasp quaternions from actual object orientations after reset
+    # Settle, then restore the canonical yaw of side-grasp objects before
+    # the grasp frame is computed.
+    for _ in range(SETTLE_STEPS):
+        _step_to(env, robot, ik_ctrl, arm_ids, gripper_ids,
+                 ee_home, eq_home, g_open, default_jpos)
+    _restore_side_grasp_yaw(env)
+
     sm = PickPlaceStateMachine(pick_objects, device)
     for obj_idx in pick_objects:
         obj_quat = env.unwrapped.scene.rigid_objects[f"object_{obj_idx}"] \
                        .data.root_state_w[0, 3:7]
         sm.set_grasp_quat(obj_idx, obj_quat)
-
-    # Settle
-    for _ in range(SETTLE_STEPS):
-        _step_to(env, robot, ik_ctrl, arm_ids, gripper_ids,
-                 ee_home, eq_home, g_open, default_jpos)
 
     ik_ctrl.reset()
 
@@ -137,6 +233,11 @@ def collect_one_demo(
     frames_buf = [] if camera is not None else None
 
     while not sm.done:
+        if sm.needs_ik_reset:
+            robot.update(dt=env.unwrapped.physics_dt)
+            ik_ctrl.reset()
+            sm.needs_ik_reset = False
+
         obj_pos_w = env.unwrapped.scene.rigid_objects[sm.current_object_key] \
                         .data.root_pos_w[0].clone()
         ee_pos_des, ee_quat_des, gripper_cmd = sm.tick(obj_pos_w)
@@ -162,9 +263,21 @@ def collect_one_demo(
 
         _, _, terminated, truncated, _ = env.step(env_action)
 
-        if terminated.any() or truncated.any():
-            print("[WARN] Episode ended early — skipping demo.")
+        if bool(terminated.any()):
+            if check_all_objects_in_basket(env):
+                print("[INFO] Evaluation success termination — keeping recorded trajectory.")
+                break
+            print("[WARN] Episode terminated (non-success) — skipping demo.")
             return None
+        if bool(truncated.any()):
+            if sm.done:
+                print("[INFO] State machine finished at timeout boundary — keeping trajectory.")
+                break
+            print("[WARN] Episode timed out before state machine finished — skipping demo.")
+            return None
+
+    if not qpos_buf:
+        return None
 
     result = {
         "qpos":    np.stack(qpos_buf),

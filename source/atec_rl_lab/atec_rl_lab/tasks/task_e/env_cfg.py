@@ -35,6 +35,16 @@ OBJ_HALF_EXTENTS = {
 }
 OBJ_BBOX_MARGIN = 0.015
 
+# Object spawn regions (shared with scripts/act/task_e/config.py and collector randomization).
+OBJ_SPAWN_X_MIN = TABLE_CENTER_X - 0.05
+OBJ_SPAWN_X_MAX = TABLE_CENTER_X + 0.05
+OBJ_SPAWN_Z = TABLE_TOP_Z + 0.05
+OBJ_SPAWN_Y_BANDS = {
+    "object_1": (TABLE_CENTER_Y + 0.25, TABLE_CENTER_Y + 0.29),
+    "object_2": (TABLE_CENTER_Y + 0.14, TABLE_CENTER_Y + 0.20),
+    "object_3": (TABLE_CENTER_Y + 0.03, TABLE_CENTER_Y + 0.09),
+}
+
 BASKET_CENTER_X = TABLE_CENTER_X + 0.08
 BASKET_CENTER_Y = TABLE_CENTER_Y - 0.30
 BASKET_BASE_Z = TABLE_TOP_Z + TABLE_DIMS[2]
@@ -188,14 +198,9 @@ class TaskEEnvCfg(BaseEnvCfg):
         self.events.base_external_force_torque = None
         self.events.reset_robot_joints = None
 
-        # Per-object Y-bands (must match OBJ_SPAWN_Y_BANDS in scripts/act/task_e/config.py)
-        x_min, x_max = TABLE_CENTER_X - 0.10, TABLE_CENTER_X + 0.10
-        z = TABLE_TOP_Z + 0.05
-        y_bands = {
-            "object_1": (TABLE_CENTER_Y + 0.25, TABLE_CENTER_Y + 0.29),
-            "object_2": (TABLE_CENTER_Y + 0.14, TABLE_CENTER_Y + 0.20),
-            "object_3": (TABLE_CENTER_Y + 0.03, TABLE_CENTER_Y + 0.09),
-        }
+        x_min, x_max = OBJ_SPAWN_X_MIN, OBJ_SPAWN_X_MAX
+        z = OBJ_SPAWN_Z
+        y_bands = OBJ_SPAWN_Y_BANDS
         import numpy as np
         rng = np.random.default_rng(seed=self.seed)
         placed: dict[str, tuple[float, float]] = {}
