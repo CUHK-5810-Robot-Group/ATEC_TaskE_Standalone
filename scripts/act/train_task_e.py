@@ -18,7 +18,10 @@ from torch.utils.data.dataset import Dataset
 from torch.utils.data.sampler import RandomSampler, BatchSampler
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from diffusers.training_utils import EMAModel
+# EMAModel 从本地 ema_model.py 导入（与 diffusers 0.41 逐行同语义）：
+# 本环境的 huggingface_hub 1.6 与 diffusers 0.41 不兼容，而 hub 由 transformers 5.3 依赖，
+# 不能降级；详见 ema_model.py 顶部说明。除这一行导入外，训练逻辑未改动。
+from ema_model import EMAModel
 
 from atec_rl_lab.train.act.act.detr.backbone import build_backbone
 from atec_rl_lab.train.act.act.detr.transformer import build_transformer
@@ -116,21 +119,37 @@ class DemoDataset_ACT(Dataset):
             if num_traj is not None:
                 traj_keys = traj_keys[:num_traj]
 
+            n_skipped = 0
             for key in traj_keys:
                 grp = f[key]
-                states_list.append(torch.from_numpy(grp['obs'][:].astype(np.float32)))
-                actions_list.append(torch.from_numpy(grp['actions'][:].astype(np.float32)))
-
-                if include_rgb:
-                    if has_images is None:
-                        has_images = 'images' in grp
-                    if has_images and 'images' in grp:
+                # 先全部读进局部变量，成功后再一起 append —— 避免"obs 成功、
+                # images 失败"导致 states/actions/rgb 三个列表错位。
+                # 单个组不可读（例如文件曾被中断写入留下损坏组）时跳过并告警，
+                # 不让一条坏数据把整批训练打断。
+                try:
+                    obs_arr = grp['obs'][:].astype(np.float32)
+                    act_arr = grp['actions'][:].astype(np.float32)
+                    rgb_t = None
+                    if include_rgb:
+                        if 'images' not in grp:
+                            raise KeyError("该组没有 images/rgb")
                         rgb_arr = grp['images/rgb'][:]          # (T, H, W, 3) uint8
-                        rgb_t = torch.from_numpy(rgb_arr)       # uint8
                         # (T, 3, H, W) → resize → (T, 3, 224, 224)
-                        rgb_t = self.transforms(rgb_t.permute(0, 3, 1, 2))
+                        rgb_t = self.transforms(
+                            torch.from_numpy(rgb_arr).permute(0, 3, 1, 2))
                         # add camera dim → (T, 1, 3, 224, 224)
-                        rgb_list.append(rgb_t.unsqueeze(1))
+                        rgb_t = rgb_t.unsqueeze(1)
+                except Exception as exc:
+                    n_skipped += 1
+                    print(f"[WARN] 跳过不可读的 {key}: {type(exc).__name__}: {exc}")
+                    continue
+                states_list.append(torch.from_numpy(obs_arr))
+                actions_list.append(torch.from_numpy(act_arr))
+                if rgb_t is not None:
+                    rgb_list.append(rgb_t)
+                has_images = True if rgb_t is not None else has_images
+            if n_skipped:
+                print(f"[WARN] 共跳过 {n_skipped} 个不可读轨迹组")
 
         if has_images is None:
             has_images = False

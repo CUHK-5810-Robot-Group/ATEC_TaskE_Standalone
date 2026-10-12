@@ -1,0 +1,52 @@
+{
+  "tag": "probe-final",
+  "weight": "/root/gpufree-share/Robotic2/test2/ATEC_TaskE_Standalone/scripts/act/runs/act-task-e-rgb-v1/checkpoints/final.pt",
+  "weight_hash": "ba3809773cf3fc3a",
+  "episodes": 1,
+  "seed_base": 1000,
+  "episode_len_s": 240.0,
+  "summary": {
+    "full_success": 0,
+    "n": 1,
+    "per_object": {
+      "1": 0,
+      "2": 0,
+      "3": 0
+    },
+    "reasons": {
+      "time_out": 1
+    }
+  },
+  "results": [
+    {
+      "ep": 0,
+      "seed": 1000,
+      "layout": {
+        "1": [
+          1.0042771475950125,
+          0.2741536738802532,
+          0.8766426479059952
+        ],
+        "2": [
+          0.9941883594644508,
+          0.15219487655268074,
+          0.8766426479059952
+        ],
+        "3": [
+          1.0057518051240106,
+          0.041462176804847324,
+          0.8766426479059952
+        ]
+      },
+      "in_basket": [
+        false,
+        false,
+        false
+      ],
+      "n_ok": 0,
+      "reason": "time_out",
+      "steps": 11960,
+      "elapsed_s": 451.9
+    }
+  ]
+}
